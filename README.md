@@ -17,7 +17,7 @@ Compile the solution from the Developer Command Prompt:
 devenv QWC_Console.sln /Build Release 
 ```
 
-## Using dev console
+## Usage
 
 - Drop d3d8.h file in the same directory as QWC.exe
 - Toggle console in game with tilda key (ie. Source Engine games)
@@ -26,4 +26,5 @@ devenv QWC_Console.sln /Build Release
 
 ## Sources
 IMGUI Dx8 back-end from THRotator Project: https://github.com/massanoori/THRotator/
-d3d8.h wrapper: https://github.com/ThirteenAG/d3d8-wrapper/
+
+d3d8.dll wrapper: https://github.com/ThirteenAG/d3d8-wrapper/
