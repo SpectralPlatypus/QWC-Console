@@ -1,5 +1,6 @@
 # QWC-Console
 Developer Console restoration project for Harry Potter: Quidditch World Cup
+![Screenshot](https://raw.githubusercontent.com/SpectralPlatypus/QWC-Console/main/qwc_console.png)
 
 ## Building
 
