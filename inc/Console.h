@@ -16,10 +16,14 @@ class ExampleAppConsole
     int                   HistoryPos;    // -1: new line, 0..History.Size-1 browsing history.
     ImVector<const char*> Commands;
     CLI* Cli;
+    CircularBuffer** CBufPtr;
+    size_t bufCount;
 
 public:
     ExampleAppConsole() :
-        Cli(reinterpret_cast<CLI*>(CLISingleton))
+        Cli(reinterpret_cast<CLI*>(CLISingleton)),
+        CBufPtr(reinterpret_cast<CircularBuffer**>(CircularBufferPtr)),
+        bufCount(0)
     {
         ClearLog();
         memset(InputBuf, 0, sizeof(InputBuf));
@@ -34,7 +38,7 @@ public:
         Cli = nullptr;
         ClearLog();
         for (int i = 0; i < History.Size; i++)
-            std::free(History[i]);
+            free(History[i]);
     }
 
     void Draw(const char* title, bool* p_open)
@@ -75,7 +79,8 @@ public:
             ImVec4 col = ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // A better implementation may store a type per-item. For the sample let's just parse the text.
             if (strstr(item, "[error]")) col = ImColor(1.0f, 0.4f, 0.4f, 1.0f);
             else if (strncmp(item, "# ", 2) == 0) col = ImColor(1.0f, 0.78f, 0.58f, 1.0f);
-            else if (strstr(item, "<")) col = ImColor(0.78f, 1.0f, 0.58f, 1.0f);
+            else if (strstr(item, "<") || strstr(item, "[")) col = ImColor(0.78f, 1.0f, 0.58f, 1.0f);
+            else if (strstr(item, ">")) col = ImColor(0.58f, 0.78f, 1.0f, 1.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, col);
             ImGui::TextUnformatted(item);
             ImGui::PopStyleColor();
@@ -104,6 +109,19 @@ public:
             if (InputBuf[0])
                 ExecCommand(InputBuf);
             strcpy_s(InputBuf, "");
+        }
+
+        auto* cBuf = *CBufPtr;
+        if (cBuf)
+        {
+            while (bufCount != cBuf->bufIdx)
+            {
+                if (cBuf->buffer[bufCount][0] == NULL)
+                    break;
+
+                AddLog("> %s", cBuf->buffer[bufCount]);
+                ++bufCount;
+            }
         }
 
         // Demonstrate keeping auto focus on the input box
@@ -170,9 +188,109 @@ private:
         }
     }
 
-    int     TextEditCallback(ImGuiTextEditCallbackData* data)
+    struct CandidateList
     {
-        //AddLog("cursor: %d, selection: %d-%d", data->CursorPos, data->SelectionStart, data->SelectionEnd);
+        char preFix[0x80];
+        ImVector<CmdNode*> entries;
+
+        CandidateList() :
+            entries()
+        {
+            memset(preFix, 0, 0x80);
+        }
+    };
+
+    void GetCmdCandidates(const char* input, CandidateList& list)
+    {
+        // TODO: Rewrite with the lexer
+        char* cmd = _strdup(input);
+        char* next_token = NULL;
+
+        const char* token = strtok_s(cmd, ".", &next_token);
+        // Bail early if no delimiters exist
+        if (strchr(input, '.') == NULL)
+        {
+            auto* p = Cli->commandTable->head;
+            while (p)
+            {
+                if (_strnicmp(p->cmdName, input, strlen(input)) == 0)
+                {
+                    list.entries.push_back(p);
+                }
+                p = p->next;
+            }
+            return;
+        }
+
+        CmdNode* ptr = Cli->GetCmdNode(token);
+        if (ptr == NULL)
+            return;
+
+        strcat_s(list.preFix, ptr->cmdName);
+
+        CmdNode* sPtr = ptr->childNode;
+        if (!sPtr)
+            return;
+
+        // traverse subCommand chain
+        token = strtok_s(NULL, ".", &next_token);
+        CmdNode* pPtr = sPtr;
+        while (token)
+        {
+            while (sPtr)
+            {
+                if (_strnicmp(sPtr->cmdName, token, max(strlen(sPtr->cmdName), strlen(token))) == 0)
+                    break;
+                sPtr = sPtr->next;
+            }
+
+            //None are exact match, populate candidates and bail
+            if (!sPtr)
+            {
+                sPtr = pPtr;
+                strcat_s(list.preFix, ".");
+                while (sPtr)
+                {
+                    if (_strnicmp(sPtr->cmdName, token, strlen(token)) == 0)
+                    {
+                        list.entries.push_back(sPtr);
+                    }
+                    sPtr = sPtr->next;
+                }
+                return;
+            }
+
+            // Exact match, move onto next subcommand
+            strcat_s(list.preFix, ".");
+            strcat_s(list.preFix, sPtr->cmdName);
+
+            token = strtok_s(NULL, ".", &next_token);
+
+            sPtr = sPtr->childNode;
+            if (!token) break;
+
+            pPtr = sPtr;
+        }
+
+        // Match the substring after the final delimiter
+        if (!sPtr)  return;
+
+        token = strrchr(input, '.');
+        ++token;
+
+        strcat_s(list.preFix, ".");
+        while (sPtr)
+        {
+            if (_strnicmp(sPtr->cmdName, token, strlen(token)) == 0)
+            {
+                list.entries.push_back(sPtr);
+            }
+            sPtr = sPtr->next;
+        }
+    }
+
+    int TextEditCallback(ImGuiTextEditCallbackData* data)
+    {
         switch (data->EventFlag)
         {
         case ImGuiInputTextFlags_CallbackCompletion:
@@ -190,87 +308,61 @@ private:
                 word_start--;
             }
 
+            CandidateList list{};
+            GetCmdCandidates(word_start, list);
 
-            const char* firstWordEnd = strchr(word_start, '.');
-            char firstWordBuf[64] = { 0 };
-            ImVector<const char*> candidates;
-            if (firstWordEnd)
-            {
-                auto* ptr = Cli->commandTable->head;
-                while (ptr)
-                {
-                    if (_strnicmp(ptr->cmdName, word_start, max((int)strlen(ptr->cmdName), firstWordEnd - word_start)) == 0)
-                        break;
-                    ptr = ptr->next;
-                }
-                ++firstWordEnd;
-                if (ptr)
-                {
-                    strncpy_s(firstWordBuf, word_start, firstWordEnd - word_start);
-                }
-
-                auto* sptr = ptr ? ptr->head : nullptr;
-                while (sptr)
-                {
-                    if (_strnicmp(sptr->cmdName, firstWordEnd, (int)(word_end - firstWordEnd)) == 0)
-                    {
-                        candidates.push_back(sptr->cmdName);
-                    }
-                    sptr = sptr->next;
-                }
-            }
-            else
-            {
-                firstWordEnd = word_start;
-                auto* ptr = Cli->commandTable->head;
-                while (ptr)
-                {
-                    if (_strnicmp(ptr->cmdName, word_start, (int)(word_end - word_start)) == 0)
-                        candidates.push_back(ptr->cmdName);
-                    ptr = ptr->next;
-                }
-            }
-
-            if (candidates.Size == 0)
+            if (list.entries.size() == 0 && list.preFix[0] == NULL)
             {
                 // No match
                 AddLog("No match for \"%.*s\"!\n", (int)(word_end - word_start), word_start);
             }
-            else if (candidates.Size == 1)
+            else if (list.entries.size() == 0)
+            {
+                data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+                data->InsertChars(data->CursorPos, list.preFix);
+            }
+            else if (list.entries.size() == 1)
             {
                 // Single match. Delete the beginning of the word and replace it entirely so we've got nice casing
-                data->DeleteChars((int)(firstWordEnd - data->Buf), (int)(word_end - firstWordEnd));
-                data->InsertChars(data->CursorPos, candidates[0]);
-                if (firstWordEnd == word_start)
-                    data->InsertChars(data->CursorPos, ".");
-                else
+                data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+
+                // Sub Cmd
+                auto* cmd = list.entries[0];
+                data->InsertChars(data->CursorPos, list.preFix);
+                data->InsertChars(data->CursorPos, cmd->cmdName);
+
+                if (cmd->args)
                 {
-                    firstWordBuf[strlen(firstWordBuf) - 1] = '\0';
-                    auto* pptr = Cli->GetTopCmd(firstWordBuf)->GetSubCmd(candidates[0])->args;
                     char outputBuf[256] = { 0 };
                     char* target = &outputBuf[0];
-                    target += sprintf_s(target, 256, "%s ", word_start);
+                    target += sprintf_s(target, 256, "%s%s ", list.preFix, cmd->cmdName);
+                    CliRegParam* pptr = cmd->args;
                     while (pptr)
                     {
-                        target += sprintf_s(target, 256 - (target - outputBuf), "<%s:%s> ", pptr->argName, pptr->GetType());
+                        target += sprintf_s(target, 256 - (target - outputBuf), pptr->optional ? "[%s:%s] " : "<%s:%s> ", pptr->argName, pptr->GetType());
                         pptr = pptr->next;
                     }
                     AddLog("Usage: %s\n", outputBuf);
                     data->InsertChars(data->CursorPos, " ");
                 }
+                else if(cmd->childNode)
+                {
+                    data->InsertChars(data->CursorPos, ".");
+                }
+
             }
             else
             {
                 // Multiple matches. Complete as much as we can, so inputing "C" will complete to "CL" and display "CLEAR" and "CLASSIFY"
-                int match_len = (int)(word_end - firstWordEnd);
+                int match_len = 0;
                 for (;;)
                 {
                     int c = 0;
                     bool all_candidates_matches = true;
-                    for (int i = 0; i < candidates.Size && all_candidates_matches; i++)
+                    for (int i = 0; i < list.entries.size() && all_candidates_matches; i++)
                         if (i == 0)
-                            c = toupper(candidates[i][match_len]);
-                        else if (c == 0 || c != toupper(candidates[i][match_len]))
+                            c = toupper(list.entries[i]->cmdName[match_len]);
+                        else if (c == 0 || c != toupper(list.entries[i]->cmdName[match_len]))
                             all_candidates_matches = false;
                     if (!all_candidates_matches)
                         break;
@@ -279,15 +371,15 @@ private:
 
                 if (match_len > 0)
                 {
-                    data->DeleteChars((int)(firstWordEnd - data->Buf), (int)(word_end - firstWordEnd));
-                    data->InsertChars(data->CursorPos, candidates[0], candidates[0] + match_len);
+                    data->DeleteChars((int)(word_start - data->Buf), (int)(word_end - word_start));
+                    data->InsertChars(data->CursorPos, list.preFix);
+                    data->InsertChars(data->CursorPos, list.entries[0]->cmdName, list.entries[0]->cmdName + match_len);
                 }
 
                 // List matches
                 AddLog("Possible matches:\n");
-                for (int i = 0; i < candidates.Size; i++)
-                    AddLog("- %s%s\n", firstWordBuf, candidates[i]);
-
+                for (int i = 0; i < list.entries.size(); i++)
+                    AddLog("- %s%s\n", list.preFix, list.entries[i]->cmdName);
             }
 
             break;

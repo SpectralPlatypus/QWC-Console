@@ -363,13 +363,10 @@ LRESULT STDMETHODCALLTYPE user_wndproc(HWND window, UINT message_type, WPARAM w_
     return CallWindowProc(game_wndproc, window, message_type, w_param, l_param);
 };
 
-
 HRESULT Direct3DDevice8Wrapper::EndScene() {
-    static bool init = 0;
-    bool* cliReady = reinterpret_cast<bool*>(SingletonInit);
-
-    static bool is_initialised = false;
     static ExampleAppConsole console = {};
+    static bool is_initialised = false;
+
     if (!is_initialised) {
         // Find a handle to the first top-level window belonging to the game process.
         EnumWindows(find_game_hwnd, GetCurrentProcessId());
